@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Ledgerly">
 <title>Ledgerly — Personal Accounting</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="manifest" href="data:application/json;base64,ewogICJuYW1lIjogIkxlZGdlcmx5IiwKICAic2hvcnRfbmFtZSI6ICJMZWRnZXJseSIsCiAgInN0YXJ0X3VybCI6ICIuIiwKICAiZGlzcGxheSI6ICJzdGFuZGFsb25lIiwKICAib3JpZW50YXRpb24iOiAicG9ydHJhaXQiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiNmNGYxZWEiLAogICJ0aGVtZV9jb2xvciI6ICIjMGEzZDJjIgp9">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1380,11 +1381,61 @@
 </style>
 </head>
 <body>
+<!-- Login overlay (shown when not authenticated) -->
+<div id="authOverlay" style="display: none; position: fixed; inset: 0; background: var(--paper); z-index: 500; overflow-y: auto; padding: 60px 28px 40px; padding-top: calc(60px + env(safe-area-inset-top));">
+  <div style="max-width: 420px; margin: 0 auto;">
+    <div style="text-align: center; margin-bottom: 40px;">
+      <div style="font-family: var(--serif); font-style: italic; font-weight: 300; font-size: 64px; color: var(--accent); line-height: 1;">L</div>
+      <h1 style="font-family: var(--serif); font-weight: 300; font-size: 36px; letter-spacing: -0.03em; margin-top: 12px;">Ledger<em style="color: var(--accent); font-style: italic;">ly</em></h1>
+      <p style="font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4); margin-top: 6px; font-weight: 500;">Private Accounts</p>
+    </div>
+
+    <div id="authStep1">
+      <h2 style="font-family: var(--serif); font-weight: 400; font-size: 22px; letter-spacing: -0.02em; margin-bottom: 6px;">Sign in</h2>
+      <p style="font-size: 13px; color: var(--ink-4); margin-bottom: 28px; font-style: italic; font-family: var(--serif);">
+        We'll email you a magic link — no password needed.
+      </p>
+      <div class="field">
+        <label>Email Address</label>
+        <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <button class="btn" id="authSendBtn">Send Magic Link</button>
+      <p id="authError" style="color: var(--negative); font-size: 12px; margin-top: 12px; display: none;"></p>
+
+      <div style="text-align: center; margin: 28px 0 20px;">
+        <div style="height: 1px; background: var(--hairline-soft); position: relative;">
+          <span style="position: absolute; top: -8px; left: 50%; transform: translateX(-50%); background: var(--paper); padding: 0 12px; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4); font-weight: 500;">Or</span>
+        </div>
+      </div>
+
+      <button class="btn ghost" id="authSkipBtn">Continue without account</button>
+      <p style="font-size: 11px; color: var(--ink-4); margin-top: 8px; text-align: center; line-height: 1.5;">
+        Local-only mode — data stays on this device, no sync.
+      </p>
+    </div>
+
+    <div id="authStep2" style="display: none;">
+      <h2 style="font-family: var(--serif); font-weight: 400; font-size: 22px; letter-spacing: -0.02em; margin-bottom: 12px;">Check your email</h2>
+      <p style="font-size: 14px; color: var(--ink-3); margin-bottom: 12px; line-height: 1.5;">
+        We've sent a magic link to <strong id="authSentEmail">you@example.com</strong>
+      </p>
+      <p style="font-size: 13px; color: var(--ink-4); margin-bottom: 28px; font-style: italic; font-family: var(--serif);">
+        Tap the link in your email to sign in. The link expires in 1 hour.
+      </p>
+      <button class="btn ghost" id="authBackBtn">Use a different email</button>
+    </div>
+
+    <div style="margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--hairline-soft); font-size: 11px; color: var(--ink-4); letter-spacing: 0.02em; line-height: 1.6;">
+      Your data is encrypted in transit and stored privately. Only you can see it. No ads, no tracking.
+    </div>
+  </div>
+</div>
+
 <div class="app">
   <header class="topbar">
     <div class="brand-wrap">
       <div class="brand">Ledger<em>ly</em></div>
-      <div class="brand-meta">Private Accounts</div>
+      <div class="brand-meta" id="userMeta">Private Accounts</div>
     </div>
     <button class="basis-pill" id="basisPill"><span class="dot"></span><span id="basisLabel">Accrual</span></button>
   </header>
@@ -1440,8 +1491,21 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ============= SUPABASE CONFIG =============
+const SUPABASE_URL = 'https://vstjtgjhogymnefoqtkq.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_gV2qIQetumHk_2FFxWsuQA_SIFBkRJ0';
+
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Auth state
+let currentUser = null;       // null = not logged in (local-only mode)
+let cloudSyncEnabled = false; // becomes true after successful login
+let pendingSave = null;       // debounce timer for cloud saves
+let syncing = false;
+
 // ============= DATA MODEL =============
 const STORAGE_KEY = 'ledgerly_data_v1';
+const LOCAL_ONLY_FLAG = 'ledgerly_local_only';
 
 const ACCT_TYPES = {
   asset: { label: 'Asset', debitNormal: true },
@@ -1514,7 +1578,173 @@ function seedData() {
 
 function saveData() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // Debounced cloud sync (waits 1.5s after last change to avoid spamming)
+  if (cloudSyncEnabled && currentUser) {
+    if (pendingSave) clearTimeout(pendingSave);
+    pendingSave = setTimeout(syncToCloud, 1500);
+  }
 }
+
+// ============= CLOUD SYNC =============
+async function syncToCloud() {
+  if (!currentUser) return;
+  try {
+    syncing = true;
+    updateSyncIndicator('syncing');
+    const { error } = await supa.from('user_data').upsert({
+      user_id: currentUser.id,
+      data: data,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+    if (error) throw error;
+    updateSyncIndicator('synced');
+  } catch (err) {
+    console.error('Sync failed:', err);
+    updateSyncIndicator('error');
+  } finally {
+    syncing = false;
+  }
+}
+
+async function syncFromCloud() {
+  if (!currentUser) return false;
+  try {
+    updateSyncIndicator('syncing');
+    const { data: row, error } = await supa
+      .from('user_data')
+      .select('data, updated_at')
+      .eq('user_id', currentUser.id)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (row && row.data) {
+      // Cloud has data — merge by taking the most recent
+      // For simplicity v1: cloud wins on initial login. (Future: timestamp-based merge.)
+      data = row.data;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      state.basis = data.settings.basis;
+      updateSyncIndicator('synced');
+      return true;
+    } else {
+      // Cloud is empty — push our local data up as the initial copy
+      await syncToCloud();
+      return false;
+    }
+  } catch (err) {
+    console.error('Cloud fetch failed:', err);
+    updateSyncIndicator('error');
+    return false;
+  }
+}
+
+function updateSyncIndicator(status) {
+  const meta = document.getElementById('userMeta');
+  if (!meta) return;
+  if (!currentUser) {
+    meta.textContent = 'Local Only';
+    meta.style.color = '';
+    return;
+  }
+  const email = currentUser.email || '';
+  const shortEmail = email.length > 24 ? email.slice(0, 22) + '…' : email;
+  if (status === 'syncing') {
+    meta.innerHTML = `<span style="opacity: 0.7;">${shortEmail} · syncing…</span>`;
+  } else if (status === 'synced') {
+    meta.innerHTML = `<span>${shortEmail} · <span style="color: var(--positive);">●</span> synced</span>`;
+  } else if (status === 'error') {
+    meta.innerHTML = `<span>${shortEmail} · <span style="color: var(--negative);">●</span> offline</span>`;
+  } else {
+    meta.innerHTML = shortEmail;
+  }
+}
+
+// ============= AUTH =============
+async function initAuth() {
+  // Check for existing session
+  const { data: { session } } = await supa.auth.getSession();
+  if (session) {
+    currentUser = session.user;
+    cloudSyncEnabled = true;
+    await syncFromCloud();
+    hideAuthOverlay();
+    return;
+  }
+
+  // Check if user previously chose local-only mode
+  if (localStorage.getItem(LOCAL_ONLY_FLAG) === '1') {
+    hideAuthOverlay();
+    return;
+  }
+
+  // No session, no local-only choice → show login
+  showAuthOverlay();
+}
+
+function showAuthOverlay() {
+  const ov = document.getElementById('authOverlay');
+  if (ov) ov.style.display = 'block';
+  document.getElementById('authStep1').style.display = 'block';
+  document.getElementById('authStep2').style.display = 'none';
+}
+
+function hideAuthOverlay() {
+  const ov = document.getElementById('authOverlay');
+  if (ov) ov.style.display = 'none';
+  updateSyncIndicator(currentUser ? 'synced' : '');
+  // Re-render so dashboard shows current state
+  if (typeof render === 'function') render();
+}
+
+async function sendMagicLink(email) {
+  const errEl = document.getElementById('authError');
+  errEl.style.display = 'none';
+  const btn = document.getElementById('authSendBtn');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  try {
+    const redirectTo = window.location.origin + window.location.pathname;
+    const { error } = await supa.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: redirectTo }
+    });
+    if (error) throw error;
+    document.getElementById('authStep1').style.display = 'none';
+    document.getElementById('authStep2').style.display = 'block';
+    document.getElementById('authSentEmail').textContent = email;
+  } catch (err) {
+    errEl.textContent = err.message || 'Could not send link. Try again.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send Magic Link';
+  }
+}
+
+async function signOut() {
+  if (!confirm('Sign out? Your data stays in the cloud, this device will switch to local-only.')) return;
+  await supa.auth.signOut();
+  currentUser = null;
+  cloudSyncEnabled = false;
+  localStorage.removeItem(LOCAL_ONLY_FLAG);
+  showAuthOverlay();
+}
+
+// Listen for auth state changes (e.g., when user clicks magic link)
+supa.auth.onAuthStateChange(async (event, session) => {
+  if (event === 'SIGNED_IN' && session) {
+    currentUser = session.user;
+    cloudSyncEnabled = true;
+    localStorage.removeItem(LOCAL_ONLY_FLAG);
+    await syncFromCloud();
+    hideAuthOverlay();
+    showToast && showToast('Signed in');
+  } else if (event === 'SIGNED_OUT') {
+    currentUser = null;
+    cloudSyncEnabled = false;
+    updateSyncIndicator('');
+  }
+});
 
 // ============= UTILS =============
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -2378,14 +2608,44 @@ function renderSettings() {
 
     <div class="section-rule">
       <span class="no">v.</span>
+      <h2>Account</h2>
+      <span class="line"></span>
+    </div>
+    ${currentUser ? `
+      <div class="settings-item">
+        <div class="info">
+          <div class="name">Signed in</div>
+          <div class="desc">${escapeHtml(currentUser.email || '')}</div>
+        </div>
+        <span class="chev"><span style="color: var(--positive); font-size: 10px;">●</span> synced</span>
+      </div>
+      <div class="settings-item" id="signOutBtn">
+        <div class="info">
+          <div class="name" style="color: var(--negative);">Sign Out</div>
+          <div class="desc">Switch to local-only mode</div>
+        </div>
+        <span class="chev" style="color: var(--negative);">›</span>
+      </div>
+    ` : `
+      <div class="settings-item" id="signInBtn">
+        <div class="info">
+          <div class="name">Sign In to Sync</div>
+          <div class="desc">Magic link · sync across devices</div>
+        </div>
+        <span class="chev">›</span>
+      </div>
+    `}
+
+    <div class="section-rule">
+      <span class="no">vi.</span>
       <h2>About</h2>
       <span class="line"></span>
     </div>
     <div style="padding: 16px 0;">
       <div style="font-family: var(--serif); font-size: 22px; font-weight: 400; letter-spacing: -0.02em;">Ledger<em style="font-style: italic; color: var(--accent);">ly</em></div>
-      <div style="font-size: 11px; color: var(--ink-4); margin-top: 6px; letter-spacing: 0.04em;">Private accounting · v1.1</div>
+      <div style="font-size: 11px; color: var(--ink-4); margin-top: 6px; letter-spacing: 0.04em;">Private accounting · v2.0</div>
       <div style="font-size: 12px; color: var(--ink-3); margin-top: 16px; line-height: 1.6; font-style: italic; font-family: var(--serif);">
-        "Your data stays on your device. Nothing is sent to any server."
+        ${currentUser ? '"Your data syncs securely across your devices."' : '"Your data stays on this device until you sign in."'}
       </div>
     </div>
   `;
@@ -2401,6 +2661,15 @@ function renderSettings() {
   document.getElementById('importJson').addEventListener('click', importJson);
   document.getElementById('importStatement').addEventListener('click', openImportWizard);
   document.getElementById('resetData').addEventListener('click', resetData);
+  if (document.getElementById('signOutBtn')) {
+    document.getElementById('signOutBtn').addEventListener('click', signOut);
+  }
+  if (document.getElementById('signInBtn')) {
+    document.getElementById('signInBtn').addEventListener('click', () => {
+      localStorage.removeItem(LOCAL_ONLY_FLAG);
+      showAuthOverlay();
+    });
+  }
 }
 
 // ============= SHEETS =============
@@ -3767,6 +4036,35 @@ window.addEventListener('orientationchange', () => setTimeout(updateNavIndicator
 // Ensure indicator finds its place after initial layout
 setTimeout(updateNavIndicator, 100);
 setTimeout(updateNavIndicator, 400);
+
+// ============= AUTH UI HANDLERS =============
+document.getElementById('authSendBtn').addEventListener('click', () => {
+  const email = document.getElementById('authEmail').value.trim();
+  if (!email || !email.includes('@')) {
+    const err = document.getElementById('authError');
+    err.textContent = 'Please enter a valid email address';
+    err.style.display = 'block';
+    return;
+  }
+  sendMagicLink(email);
+});
+
+document.getElementById('authEmail').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') document.getElementById('authSendBtn').click();
+});
+
+document.getElementById('authSkipBtn').addEventListener('click', () => {
+  localStorage.setItem(LOCAL_ONLY_FLAG, '1');
+  hideAuthOverlay();
+});
+
+document.getElementById('authBackBtn').addEventListener('click', () => {
+  document.getElementById('authStep1').style.display = 'block';
+  document.getElementById('authStep2').style.display = 'none';
+});
+
+// Initialize auth (this might show the login overlay)
+initAuth();
 </script>
 </body>
 </html>
